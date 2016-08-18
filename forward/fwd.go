@@ -209,9 +209,10 @@ func (f *httpForwarder) copyRequest(req *http.Request, u *url.URL) *http.Request
 	outReq.URL = utils.CopyURL(req.URL)
 	outReq.URL.Scheme = u.Scheme
 	outReq.URL.Host = u.Host
-	outReq.URL.Opaque = req.RequestURI
-	// raw query is already included in RequestURI, so ignore it to avoid dupes
-	outReq.URL.RawQuery = ""
+	outReq.URL.Path = u.Path
+	outReq.URL.RawPath = u.RawPath
+	outReq.URL.RawQuery = u.RawQuery
+	outReq.URL.Opaque = ""
 	// Do not pass client Host header unless optsetter PassHostHeader is set.
 	if !f.passHost {
 		outReq.Host = u.Host
@@ -286,11 +287,30 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 
 // copyRequest makes a copy of the specified request.
 func (f *websocketForwarder) copyRequest(req *http.Request) (outReq *http.Request) {
+	u := req.URL
 	outReq = new(http.Request)
 	*outReq = *req
 	outReq.URL = utils.CopyURL(req.URL)
 	outReq.URL.Scheme = req.URL.Scheme
 	outReq.URL.Host = req.URL.Host
+	outReq.URL.Path = u.Path
+	outReq.URL.RawPath = u.RawPath
+	outReq.URL.RawQuery = u.RawQuery
+	outReq.URL.Opaque = ""
+
+	outReq.Proto = "HTTP/1.1"
+	outReq.ProtoMajor = 1
+	outReq.ProtoMinor = 1
+
+	// Overwrite close flag so we can keep persistent connection for the backend servers
+	outReq.Close = false
+
+	outReq.Header = make(http.Header)
+	utils.CopyHeaders(outReq.Header, req.Header)
+
+	if f.rewriter != nil {
+		f.rewriter.Rewrite(outReq)
+	}
 	return outReq
 }
 
