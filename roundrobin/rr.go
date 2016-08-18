@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"sync"
 
 	"github.com/vulcand/oxy/utils"
@@ -17,6 +18,14 @@ func Weight(w int) ServerOption {
 			return fmt.Errorf("Weight should be >= 0")
 		}
 		s.weight = w
+		return nil
+	}
+}
+
+// PathRewrite is an optional functional argument that enable server-side url rewrite on request
+func PathRewrite(r bool) ServerOption {
+	return func(s *server) error {
+		s.pathRewrite = r
 		return nil
 	}
 }
@@ -62,14 +71,36 @@ func (r *RoundRobin) Next() http.Handler {
 }
 
 func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	url, err := r.NextServer()
+	srv, err := r.nextServer()
 	if err != nil {
 		r.errHandler.ServeHTTP(w, req, err)
 		return
 	}
+
 	// make shallow copy of request before chaning anything to avoid side effects
 	newReq := *req
-	newReq.URL = url
+
+	newReq.URL = utils.CopyURL(srv.url)
+	newReq.URL.RawPath = req.URL.RawPath
+	newReq.URL.Path = req.URL.Path
+	newReq.URL.RawQuery = req.URL.RawQuery
+	newReq.URL.Fragment = req.URL.Fragment
+
+	if srv.pathRewrite {
+		cleanPath := path.Join(srv.url.Path, req.URL.Path)
+
+		// Preserve trailing slash
+		l := len(req.URL.Path)
+		if l > 1 && req.URL.Path[l-1] == '/' {
+			cleanPath += "/"
+		}
+
+		newReq.URL.Path = cleanPath
+
+		// oxy uses this downstream... it shouldn't
+		//newReq.RequestURI = url.Path
+	}
+
 	r.next.ServeHTTP(w, &newReq)
 }
 
@@ -78,6 +109,7 @@ func (r *RoundRobin) NextServer() (*url.URL, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return utils.CopyURL(srv.url), nil
 }
 
@@ -248,6 +280,8 @@ type server struct {
 	url *url.URL
 	// Relative weight for the enpoint to other enpoints in the load balancer
 	weight int
+
+	pathRewrite bool
 }
 
 const defaultWeight = 1
