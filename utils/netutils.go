@@ -1,7 +1,10 @@
 package utils
 
 import (
+	"bufio"
 	"io"
+	"mime"
+	"net"
 	"net/http"
 	"net/url"
 )
@@ -42,6 +45,10 @@ func (p *ProxyWriter) Flush() {
 	}
 }
 
+func (p *ProxyWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return p.W.(http.Hijacker).Hijack()
+}
+
 func NewBufferWriter(w io.WriteCloser) *BufferWriter {
 	return &BufferWriter{
 		W: w,
@@ -70,6 +77,10 @@ func (b *BufferWriter) Write(buf []byte) (int, error) {
 // WriteHeader sets rw.Code.
 func (b *BufferWriter) WriteHeader(code int) {
 	b.Code = code
+}
+
+func (b *BufferWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return b.W.(http.Hijacker).Hijack()
 }
 
 type nopWriteCloser struct {
@@ -118,4 +129,10 @@ func RemoveHeaders(headers http.Header, names ...string) {
 	for _, h := range names {
 		headers.Del(h)
 	}
+}
+
+// Parse the MIME media type value of a header.
+func GetHeaderMediaType(headers http.Header, name string) (string, error)  {
+	mediatype, _, err := mime.ParseMediaType(headers.Get(name))
+	return mediatype, err
 }
