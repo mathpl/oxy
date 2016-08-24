@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/kr/pretty"
 	"github.com/mailgun/timetools"
 	"github.com/vulcand/oxy/forward"
 	"github.com/vulcand/oxy/testutils"
@@ -45,7 +46,7 @@ func (s *RBSuite) TestRebalancerNormalOperation(c *C) {
 	c.Assert(err, IsNil)
 
 	rb.UpsertServer(testutils.ParseURI(a.URL))
-	c.Assert(rb.Servers()[0].String(), Equals, a.URL)
+	c.Assert(rb.Servers()[0].url.String(), Equals, a.URL)
 
 	proxy := httptest.NewServer(rb)
 	defer proxy.Close()
@@ -316,11 +317,14 @@ func (s *RBSuite) TestRebalancerLive(c *C) {
 	defer proxy.Close()
 
 	for i := 0; i < 1000; i += 1 {
-		testutils.Get(proxy.URL)
+		_, _, err = testutils.Get(proxy.URL)
+
 		if i%10 == 0 {
 			s.clock.CurrentTime = s.clock.CurrentTime.Add(rb.backoffDuration + time.Second)
 		}
 	}
+
+	pretty.Println(rb.servers)
 
 	// load balancer changed weights
 	c.Assert(rb.servers[0].curWeight, Equals, FSMMaxWeight)

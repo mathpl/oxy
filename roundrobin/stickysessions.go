@@ -15,7 +15,7 @@ func NewStickySession(c string) *StickySession {
 }
 
 // GetBackend returns the backend URL stored in the sticky cookie, iff the backend is still in the valid list of servers.
-func (s *StickySession) GetBackend(req *http.Request, servers []*url.URL) (*url.URL, bool, error) {
+func (s *StickySession) GetBackend(req *http.Request, servers []*server) (*server, bool, error) {
 	cookie, err := req.Cookie(s.cookiename)
 	switch err {
 	case nil:
@@ -30,28 +30,28 @@ func (s *StickySession) GetBackend(req *http.Request, servers []*url.URL) (*url.
 		return nil, false, err
 	}
 
-	if s.isBackendAlive(s_url, servers) {
-		return s_url, true, nil
+	if srv := s.isBackendAlive(s_url, servers); srv != nil {
+		return srv, true, nil
 	} else {
 		return nil, false, nil
 	}
 }
 
-func (s *StickySession) StickBackend(backend *url.URL, w *http.ResponseWriter) {
-	c := &http.Cookie{Name: s.cookiename, Value: backend.String()}
+func (s *StickySession) StickBackend(backend *server, w *http.ResponseWriter) {
+	c := &http.Cookie{Name: s.cookiename, Value: backend.url.String()}
 	http.SetCookie(*w, c)
 	return
 }
 
-func (s *StickySession) isBackendAlive(needle *url.URL, haystack []*url.URL) bool {
+func (s *StickySession) isBackendAlive(needle *url.URL, haystack []*server) *server {
 	if len(haystack) == 0 {
-		return false
+		return nil
 	}
 
 	for _, s := range haystack {
-		if sameURL(needle, s) {
-			return true
+		if sameURL(needle, s.url) {
+			return s
 		}
 	}
-	return false
+	return nil
 }

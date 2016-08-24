@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"sync"
 	"time"
 
@@ -135,7 +136,7 @@ func NewRebalancer(handler balancerHandler, opts ...RebalancerOption) (*Rebalanc
 	return rb, nil
 }
 
-func (rb *Rebalancer) Servers() []*url.URL {
+func (rb *Rebalancer) Servers() []*server {
 	rb.mtx.Lock()
 	defer rb.mtx.Unlock()
 
@@ -143,15 +144,18 @@ func (rb *Rebalancer) Servers() []*url.URL {
 }
 
 func (rb *Rebalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	var (
+		srv *server
+		err error
+	)
+
 	pw := &utils.ProxyWriter{W: w}
 	start := rb.clock.UtcNow()
 
-	// make shallow copy of request before changing anything to avoid side effects
 	newReq := *req
 	stuck := false
-
 	if rb.ss != nil {
-		cookie_url, present, err := rb.ss.GetBackend(&newReq, rb.Servers())
+		cookieSrv, present, err := rb.ss.GetBackend(&newReq, rb.Servers())
 
 		if err != nil {
 			rb.errHandler.ServeHTTP(w, req, err)
@@ -159,34 +163,54 @@ func (rb *Rebalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		if present {
-			newReq.URL = cookie_url
+			srv = cookieSrv
 			stuck = true
 		}
 	}
 
 	if !stuck {
-		url, err := rb.next.NextServer()
+		srv, err = rb.next.NextServer()
 		if err != nil {
 			rb.errHandler.ServeHTTP(w, req, err)
 			return
 		}
 
 		if rb.ss != nil {
-			rb.ss.StickBackend(url, &w)
+			rb.ss.StickBackend(srv, &w)
+		}
+	}
+
+	srvUrl := utils.CopyURL(srv.url)
+
+	// make shallow copy of request before chaning anything to avoid side effects
+	newReq.URL = srvUrl
+	newReq.URL.RawPath = req.URL.RawPath
+	newReq.URL.Path = req.URL.Path
+	newReq.URL.RawQuery = req.URL.RawQuery
+	newReq.URL.Fragment = req.URL.Fragment
+
+	if srv.pathRewrite {
+		cleanPath := path.Join(srvUrl.Path, req.URL.Path)
+
+		// Preserve trailing slash
+		l := len(req.URL.Path)
+		if l > 1 && req.URL.Path[l-1] == '/' {
+			cleanPath += "/"
 		}
 
-		newReq.URL = url
+		newReq.URL.Path = cleanPath
 	}
-	rb.next.Next().ServeHTTP(pw, &newReq)
 
-	rb.recordMetrics(newReq.URL, pw.Code, rb.clock.UtcNow().Sub(start))
+	rb.next.ServeHTTP(pw, &newReq)
+
+	rb.recordMetrics(srv.url, pw.Code, rb.clock.UtcNow().Sub(start))
 	rb.adjustWeights()
 }
 
-func (rb *Rebalancer) recordMetrics(u *url.URL, code int, latency time.Duration) {
+func (rb *Rebalancer) recordMetrics(url *url.URL, code int, latency time.Duration) {
 	rb.mtx.Lock()
 	defer rb.mtx.Unlock()
-	if srv, i := rb.findServer(u); i != -1 {
+	if srv, i := rb.findServer(url); i != -1 {
 		srv.meter.Record(code, latency)
 	}
 }
