@@ -38,6 +38,13 @@ func ErrorHandler(h utils.ErrorHandler) LBOption {
 	}
 }
 
+func EnableStickySession(ss *StickySession) LBOption {
+	return func(s *RoundRobin) error {
+		s.ss = ss
+		return nil
+	}
+}
+
 type RoundRobin struct {
 	mutex      *sync.Mutex
 	next       http.Handler
@@ -46,6 +53,7 @@ type RoundRobin struct {
 	index         int
 	servers       []*server
 	currentWeight int
+	ss            *StickySession
 }
 
 func New(next http.Handler, opts ...LBOption) (*RoundRobin, error) {
@@ -54,6 +62,7 @@ func New(next http.Handler, opts ...LBOption) (*RoundRobin, error) {
 		index:   -1,
 		mutex:   &sync.Mutex{},
 		servers: []*server{},
+		ss:      nil,
 	}
 	for _, o := range opts {
 		if err := o(rr); err != nil {
@@ -71,14 +80,39 @@ func (r *RoundRobin) Next() http.Handler {
 }
 
 func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	srv, err := r.nextServer()
-	if err != nil {
-		r.errHandler.ServeHTTP(w, req, err)
-		return
-	}
+	var (
+		srv *server
+		err error
+	)
 
 	// make shallow copy of request before chaning anything to avoid side effects
 	newReq := *req
+	stuck := false
+	if r.ss != nil {
+		cookieSrv, present, err := r.ss.GetBackend(&newReq, r.Servers())
+
+		if err != nil {
+			r.errHandler.ServeHTTP(w, req, err)
+			return
+		}
+
+		if present {
+			srv = cookieSrv
+			stuck = true
+		}
+	}
+
+	if !stuck {
+		srv, err = r.NextServer()
+		if err != nil {
+			r.errHandler.ServeHTTP(w, req, err)
+			return
+		}
+
+		if r.ss != nil {
+			r.ss.StickBackend(srv, &w)
+		}
+	}
 
 	newReq.URL = utils.CopyURL(srv.url)
 	newReq.URL.RawPath = req.URL.RawPath
@@ -104,16 +138,7 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.next.ServeHTTP(w, &newReq)
 }
 
-func (r *RoundRobin) NextServer() (*url.URL, error) {
-	srv, err := r.nextServer()
-	if err != nil {
-		return nil, err
-	}
-
-	return utils.CopyURL(srv.url), nil
-}
-
-func (r *RoundRobin) nextServer() (*server, error) {
+func (r *RoundRobin) NextServer() (*server, error) {
 	r.mutex.Lock()
 	defer r.mutex.Unlock()
 
@@ -163,13 +188,13 @@ func (r *RoundRobin) RemoveServer(u *url.URL) error {
 	return nil
 }
 
-func (rr *RoundRobin) Servers() []*url.URL {
+func (rr *RoundRobin) Servers() []*server {
 	rr.mutex.Lock()
 	defer rr.mutex.Unlock()
 
-	out := make([]*url.URL, len(rr.servers))
+	out := make([]*server, len(rr.servers))
 	for i, srv := range rr.servers {
-		out[i] = srv.url
+		out[i] = srv
 	}
 	return out
 }
@@ -291,11 +316,11 @@ func sameURL(a, b *url.URL) bool {
 }
 
 type balancerHandler interface {
-	Servers() []*url.URL
+	Servers() []*server
 	ServeHTTP(w http.ResponseWriter, req *http.Request)
 	ServerWeight(u *url.URL) (int, bool)
 	RemoveServer(u *url.URL) error
 	UpsertServer(u *url.URL, options ...ServerOption) error
-	NextServer() (*url.URL, error)
+	NextServer() (*server, error)
 	Next() http.Handler
 }

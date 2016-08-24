@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,14 @@ type optSetter func(f *Forwarder) error
 func PassHostHeader(b bool) optSetter {
 	return func(f *Forwarder) error {
 		f.passHost = b
+		return nil
+	}
+}
+
+// StreamResponse forces streaming body (flushes response directly to client)
+func StreamResponse(b bool) optSetter {
+	return func(f *Forwarder) error {
+		f.httpForwarder.streamResponse = b
 		return nil
 	}
 }
@@ -105,9 +114,10 @@ type handlerContext struct {
 // httpForwarder is a handler that can reverse proxy
 // HTTP traffic
 type httpForwarder struct {
-	roundTripper http.RoundTripper
-	rewriter     ReqRewriter
-	passHost     bool
+	roundTripper   http.RoundTripper
+	rewriter       ReqRewriter
+	passHost       bool
+	streamResponse bool
 }
 
 // websocketForwarder is a handler that can reverse proxy
@@ -172,6 +182,20 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 		return
 	}
 
+	utils.CopyHeaders(w.Header(), response.Header)
+	// Remove hop-by-hop headers.
+	utils.RemoveHeaders(w.Header(), HopHeaders...)
+	w.WriteHeader(response.StatusCode)
+
+	stream := f.streamResponse
+	if !stream {
+		contentType, err := utils.GetHeaderMediaType(response.Header, ContentType)
+		if err == nil {
+			stream = contentType == "text/event-stream"
+		}
+	}
+	written, err := io.Copy(newResponseFlusher(w, stream), response.Body)
+
 	if req.TLS != nil {
 		ctx.log.Infof("Round trip: %v, code: %v, duration: %v tls:version: %x, tls:resume:%t, tls:csuite:%x, tls:server:%v",
 			req.URL, response.StatusCode, time.Now().UTC().Sub(start),
@@ -184,9 +208,6 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 			req.URL, response.StatusCode, time.Now().UTC().Sub(start))
 	}
 
-	utils.CopyHeaders(w.Header(), response.Header)
-	w.WriteHeader(response.StatusCode)
-	written, err := io.Copy(w, response.Body)
 	defer response.Body.Close()
 
 	if err != nil {
@@ -261,7 +282,7 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 	}
 	underlyingConn, _, err := hijacker.Hijack()
 	if err != nil {
-		ctx.log.Errorf("Unable to hijack the connection: %v", err)
+		ctx.log.Errorf("Unable to hijack the connection: %v %v", reflect.TypeOf(w), err)
 		ctx.errHandler.ServeHTTP(w, req, err)
 		return
 	}
