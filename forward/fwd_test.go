@@ -3,6 +3,7 @@ package forward
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,9 +14,10 @@ import (
 	"github.com/vulcand/oxy/testutils"
 	"github.com/vulcand/oxy/utils"
 
+	"io"
+
 	"golang.org/x/net/websocket"
 	. "gopkg.in/check.v1"
-	"io"
 )
 
 func TestFwd(t *testing.T) { TestingT(t) }
@@ -219,8 +221,11 @@ func (s *FwdSuite) TestEscapedURL(c *C) {
 	c.Assert(err, IsNil)
 
 	proxy := testutils.NewHandler(func(w http.ResponseWriter, req *http.Request) {
-		req.URL = testutils.ParseURI(srv.URL)
-		f.ServeHTTP(w, req)
+		url := testutils.ParseURI(srv.URL)
+		outReq := *req
+		outReq.URL.Scheme = url.Scheme
+		outReq.URL.Host = url.Host
+		f.ServeHTTP(w, &outReq)
 	})
 	defer proxy.Close()
 
@@ -411,6 +416,9 @@ func (s *FwdSuite) TestResponseFlusher(c *C) {
 	resp2 := string(buf)
 	if !strings.HasPrefix(resp2, "data: Message: test2\n\n") {
 		c.FailNow()
+	}
+	if err == nil {
+		_, err = re.Body.Read(buf)
 	}
 	c.Assert(err, Equals, io.EOF)
 }
