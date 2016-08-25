@@ -170,6 +170,7 @@ func (rb *Rebalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if !stuck {
 		srv, err = rb.next.NextServer()
+
 		if err != nil {
 			rb.errHandler.ServeHTTP(w, req, err)
 			return
@@ -201,7 +202,7 @@ func (rb *Rebalancer) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		newReq.URL.Path = cleanPath
 	}
 
-	rb.next.ServeHTTP(pw, &newReq)
+	rb.next.Next().ServeHTTP(pw, &newReq)
 
 	rb.recordMetrics(srv.url, pw.Code, rb.clock.UtcNow().Sub(start))
 	rb.adjustWeights()

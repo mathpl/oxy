@@ -7,7 +7,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/kr/pretty"
 	"github.com/mailgun/timetools"
 	"github.com/vulcand/oxy/forward"
 	"github.com/vulcand/oxy/testutils"
@@ -323,8 +322,6 @@ func (s *RBSuite) TestRebalancerLive(c *C) {
 			s.clock.CurrentTime = s.clock.CurrentTime.Add(rb.backoffDuration + time.Second)
 		}
 	}
-
-	pretty.Println(rb.servers)
 
 	// load balancer changed weights
 	c.Assert(rb.servers[0].curWeight, Equals, FSMMaxWeight)
