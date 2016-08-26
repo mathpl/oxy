@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/vulcand/oxy/utils"
@@ -109,6 +110,7 @@ type Forwarder struct {
 type handlerContext struct {
 	errHandler utils.ErrorHandler
 	log        utils.Logger
+	bufferPool *sync.Pool
 }
 
 // httpForwarder is a handler that can reverse proxy
@@ -139,6 +141,11 @@ func New(setters ...optSetter) (*Forwarder, error) {
 		if err := s(f); err != nil {
 			return nil, err
 		}
+	}
+	f.bufferPool = &sync.Pool{
+		New: func() interface{} {
+			return make([]byte, 32*1024)
+		},
 	}
 	if f.httpForwarder.roundTripper == nil {
 		f.httpForwarder.roundTripper = http.DefaultTransport
@@ -194,7 +201,10 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 			stream = contentType == "text/event-stream"
 		}
 	}
-	written, err := io.Copy(newResponseFlusher(w, stream), response.Body)
+	//written, err := io.Copy(newResponseFlusher(w, stream), response.Body)
+	buffer := ctx.bufferPool.Get().([]byte)
+	written, err := io.CopyBuffer(newResponseFlusher(w, stream), response.Body, buffer)
+	ctx.bufferPool.Put(buffer)
 
 	if req.TLS != nil {
 		ctx.log.Infof("Round trip: %v, code: %v, duration: %v tls:version: %x, tls:resume:%t, tls:csuite:%x, tls:server:%v",
@@ -212,7 +222,8 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 
 	if err != nil {
 		ctx.log.Errorf("Error copying upstream response Body: %v", err)
-		ctx.errHandler.ServeHTTP(w, req, err)
+		// Can't write error header at this point
+		//ctx.errHandler.ServeHTTP(w, req, err)
 		return
 	}
 
@@ -298,7 +309,10 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 	}
 	errc := make(chan error, 2)
 	replicate := func(dst io.Writer, src io.Reader) {
-		_, err := io.Copy(dst, src)
+		//_, err := io.Copy(dst, src)
+		buffer := ctx.bufferPool.Get().([]byte)
+		_, err := io.CopyBuffer(dst, src, buffer)
+		ctx.bufferPool.Put(buffer)
 		errc <- err
 	}
 	go replicate(targetConn, underlyingConn)
