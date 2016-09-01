@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mathpl/go-tsdmetrics"
+	"github.com/rcrowley/go-metrics"
 	"github.com/vulcand/oxy/utils"
 )
 
@@ -31,6 +33,14 @@ type optSetter func(f *Forwarder) error
 func PassHostHeader(b bool) optSetter {
 	return func(f *Forwarder) error {
 		f.passHost = b
+		return nil
+	}
+}
+
+// Add counters to track read/written bytes
+func Meters(registry tsdmetrics.TaggedRegistry, tags tsdmetrics.Tags) optSetter {
+	return func(f *Forwarder) error {
+		f.metrics = NewMetricsContext(registry, tags)
 		return nil
 	}
 }
@@ -111,6 +121,8 @@ type handlerContext struct {
 	errHandler utils.ErrorHandler
 	log        utils.Logger
 	bufferPool *sync.Pool
+
+	metrics *metricsContext
 }
 
 // httpForwarder is a handler that can reverse proxy
@@ -181,18 +193,23 @@ func (f *Forwarder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // serveHTTP forwards HTTP traffic using the configured transport
 func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx *handlerContext) {
+	ctx.metrics.httpInit()
+
 	start := time.Now().UTC()
+
+	rcr := NewReponseCodeRecorder(w)
+
 	response, err := f.roundTripper.RoundTrip(f.copyRequest(req, req.URL))
 	if err != nil {
 		ctx.log.Errorf("Error forwarding to %v, err: %v", req.URL, err)
-		ctx.errHandler.ServeHTTP(w, req, err)
+		ctx.errHandler.ServeHTTP(rcr, req, err)
 		return
 	}
 
-	utils.CopyHeaders(w.Header(), response.Header)
+	utils.CopyHeaders(rcr.Header(), response.Header)
 	// Remove hop-by-hop headers.
-	utils.RemoveHeaders(w.Header(), HopHeaders...)
-	w.WriteHeader(response.StatusCode)
+	utils.RemoveHeaders(rcr.Header(), HopHeaders...)
+	rcr.WriteHeader(response.StatusCode)
 
 	stream := f.streamResponse
 	if !stream {
@@ -203,7 +220,7 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 	}
 	//written, err := io.Copy(newResponseFlusher(w, stream), response.Body)
 	buffer := ctx.bufferPool.Get().([]byte)
-	written, err := io.CopyBuffer(newResponseFlusher(w, stream), response.Body, buffer)
+	written, err := io.CopyBuffer(newResponseFlusher(rcr, stream), response.Body, buffer)
 	ctx.bufferPool.Put(buffer)
 
 	if req.TLS != nil {
@@ -217,8 +234,9 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 		ctx.log.Infof("Round trip: %v, code: %v, duration: %v",
 			req.URL, response.StatusCode, time.Now().UTC().Sub(start))
 	}
-
 	defer response.Body.Close()
+	defer ctx.metrics.httpResponseTime.Update(int64(time.Now().Sub(start).Nanoseconds()))
+	defer ctx.metrics.IncHttpReturnCode(rcr.Code)
 
 	if err != nil {
 		ctx.log.Errorf("Error copying upstream response Body: %v", err)
@@ -228,7 +246,7 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 	}
 
 	if written != 0 {
-		w.Header().Set(ContentLength, strconv.FormatInt(written, 10))
+		rcr.Header().Set(ContentLength, strconv.FormatInt(written, 10))
 	}
 }
 
@@ -267,6 +285,10 @@ func (f *httpForwarder) copyRequest(req *http.Request, u *url.URL) *http.Request
 
 // serveHTTP forwards websocket traffic
 func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx *handlerContext) {
+	ctx.metrics.wsInit()
+
+	start := time.Now()
+
 	outReq := f.copyRequest(req)
 	host := outReq.URL.Host
 
@@ -300,6 +322,7 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 	// it is now caller's responsibility to Close the underlying connection
 	defer underlyingConn.Close()
 	defer targetConn.Close()
+	defer ctx.metrics.wsSessionTime.Update(int64(time.Now().Sub(start).Nanoseconds()))
 
 	// write the modified incoming request to the dialed connection
 	if err = outReq.Write(targetConn); err != nil {
@@ -308,15 +331,22 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 		return
 	}
 	errc := make(chan error, 2)
-	replicate := func(dst io.Writer, src io.Reader) {
-		//_, err := io.Copy(dst, src)
+	replicate := func(dst io.Writer, src io.Reader, copied metrics.Counter) {
 		buffer := ctx.bufferPool.Get().([]byte)
-		_, err := io.CopyBuffer(dst, src, buffer)
+		var (
+			err error
+			n   int64
+		)
+		for err == nil {
+			lr := &io.LimitedReader{R: src, N: 4096}
+			n, err = io.CopyBuffer(dst, lr, buffer)
+			copied.Inc(n)
+		}
 		ctx.bufferPool.Put(buffer)
 		errc <- err
 	}
-	go replicate(targetConn, underlyingConn)
-	go replicate(underlyingConn, targetConn)
+	go replicate(targetConn, underlyingConn, ctx.metrics.wsRead)
+	go replicate(underlyingConn, targetConn, ctx.metrics.wsWritten)
 	<-errc
 }
 
