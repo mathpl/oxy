@@ -16,12 +16,19 @@ type metricsContext struct {
 	initMutex              sync.Mutex
 	httpStarted, wsStarted bool
 
-	httpRead, httpWritten metrics.Counter
-	httpResponseTime      tsdmetrics.IntegerHistogram
-	httpReturnCode        map[uint8]metrics.Counter
+	httpRead,
+	httpWritten,
+	httpConnectionCounter,
+	httpConnectionOpen metrics.Counter
 
-	wsRead, wsWritten metrics.Counter
-	wsSessionTime     tsdmetrics.IntegerHistogram
+	httpResponseTime tsdmetrics.IntegerHistogram
+	httpReturnCode   map[uint8]metrics.Counter
+
+	wsRead,
+	wsWritten,
+	wsConnectionCounter,
+	wsConnectionOpen metrics.Counter
+	wsSessionTime tsdmetrics.IntegerHistogram
 }
 
 func NewMetricsContext(registry tsdmetrics.TaggedRegistry, tags tsdmetrics.Tags) *metricsContext {
@@ -43,14 +50,14 @@ func (ctx *metricsContext) httpInit() {
 
 	httpTags := ctx.tags.AddTags(tsdmetrics.Tags{"conn_type": "http"})
 	newRead := metrics.NewCounter()
-	read, ok := ctx.registry.GetOrRegister("bytes", httpTags.AddTags(tsdmetrics.Tags{"type": "read"}), newRead).(metrics.Counter)
+	read, ok := ctx.registry.GetOrRegister("bytes", httpTags.AddTags(tsdmetrics.Tags{"direction": "in"}), newRead).(metrics.Counter)
 	if !ok {
 		log.Fatalf("Invalid type registered for: bytes %s", ctx.tags)
 	}
 	ctx.httpRead = read
 
 	newWritten := metrics.NewCounter()
-	written, ok := ctx.registry.GetOrRegister("bytes", httpTags.AddTags(tsdmetrics.Tags{"type": "write"}), newWritten).(metrics.Counter)
+	written, ok := ctx.registry.GetOrRegister("bytes", httpTags.AddTags(tsdmetrics.Tags{"direction": "out"}), newWritten).(metrics.Counter)
 	if !ok {
 		log.Fatalf("Invalid type registered for: bytes %s", ctx.tags)
 	}
@@ -63,7 +70,23 @@ func (ctx *metricsContext) httpInit() {
 	}
 	ctx.httpResponseTime = histo
 
-	ctx.httpReturnCode = make(map[uint8]metrics.Counter, 5)
+	newConnectionCounter := metrics.NewCounter()
+	count, ok := ctx.registry.GetOrRegister("connection.count", httpTags, newConnectionCounter).(metrics.Counter)
+	if !ok {
+		log.Fatalf("Invalid type registered for: connection.count %s", ctx.tags)
+	}
+	ctx.httpConnectionCounter = count
+
+	newConnectionOpen := metrics.NewCounter()
+	open, ok := ctx.registry.GetOrRegister("connection.open", httpTags, newConnectionOpen).(metrics.Counter)
+	if !ok {
+		log.Fatalf("Invalid type registered for: connection.open %s", ctx.tags)
+	}
+	ctx.httpConnectionOpen = open
+
+	if ctx.httpReturnCode == nil {
+		ctx.httpReturnCode = make(map[uint8]metrics.Counter, 5)
+	}
 }
 
 func (ctx *metricsContext) wsInit() {
@@ -78,14 +101,14 @@ func (ctx *metricsContext) wsInit() {
 
 	wsTags := ctx.tags.AddTags(tsdmetrics.Tags{"conn_type": "websocket"})
 	newRead := metrics.NewCounter()
-	read, ok := ctx.registry.GetOrRegister("bytes", wsTags.AddTags(tsdmetrics.Tags{"type": "read"}), newRead).(metrics.Counter)
+	read, ok := ctx.registry.GetOrRegister("bytes", wsTags.AddTags(tsdmetrics.Tags{"direction": "in"}), newRead).(metrics.Counter)
 	if !ok {
 		log.Fatalf("Invalid type registered for: bytes %s", ctx.tags)
 	}
 	ctx.wsRead = read
 
 	newWritten := metrics.NewCounter()
-	written, ok := ctx.registry.GetOrRegister("bytes", wsTags.AddTags(tsdmetrics.Tags{"type": "write"}), newWritten).(metrics.Counter)
+	written, ok := ctx.registry.GetOrRegister("bytes", wsTags.AddTags(tsdmetrics.Tags{"direction": "out"}), newWritten).(metrics.Counter)
 	if !ok {
 		log.Fatalf("Invalid type registered for: bytes %s", ctx.tags)
 	}
@@ -97,6 +120,20 @@ func (ctx *metricsContext) wsInit() {
 		log.Fatalf("Invalid type registered for: response.time.ns %s", wsTags)
 	}
 	ctx.wsSessionTime = histo
+
+	newConnectionCounter := metrics.NewCounter()
+	count, ok := ctx.registry.GetOrRegister("connection.count", wsTags, newConnectionCounter).(metrics.Counter)
+	if !ok {
+		log.Fatalf("Invalid type registered for: connection.count %s", ctx.tags)
+	}
+	ctx.wsConnectionCounter = count
+
+	newConnectionOpen := metrics.NewCounter()
+	open, ok := ctx.registry.GetOrRegister("connection.open", wsTags, newConnectionOpen).(metrics.Counter)
+	if !ok {
+		log.Fatalf("Invalid type registered for: connection.open %s", ctx.tags)
+	}
+	ctx.wsConnectionOpen = open
 }
 
 func (ctx *metricsContext) IncHttpReturnCode(code int) {
@@ -116,11 +153,9 @@ func (ctx *metricsContext) IncHttpReturnCode(code int) {
 		var ok bool
 		c, ok = ctx.registry.GetOrRegister("response.count", tags, newC).(metrics.Counter)
 
-		// We somehow have a non-counter as metric under this name, fix it
 		if !ok {
 			log.Fatalf("Invalid type registered for: response.count %s", tags)
 		}
 	}
-
 	c.Inc(1)
 }

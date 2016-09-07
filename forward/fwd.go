@@ -197,6 +197,11 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 
 	start := time.Now().UTC()
 
+	ctx.metrics.httpRead.Inc(req.ContentLength)
+	ctx.metrics.httpConnectionCounter.Inc(1)
+	ctx.metrics.httpConnectionOpen.Inc(1)
+	defer ctx.metrics.httpConnectionOpen.Dec(1)
+
 	rcr := NewReponseCodeRecorder(w)
 
 	response, err := f.roundTripper.RoundTrip(f.copyRequest(req, req.URL))
@@ -222,6 +227,7 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 	buffer := ctx.bufferPool.Get().([]byte)
 	written, err := io.CopyBuffer(newResponseFlusher(rcr, stream), response.Body, buffer)
 	ctx.bufferPool.Put(buffer)
+	ctx.metrics.httpWritten.Inc(written)
 
 	if req.TLS != nil {
 		ctx.log.Infof("Round trip: %v, code: %v, duration: %v tls:version: %x, tls:resume:%t, tls:csuite:%x, tls:server:%v",
@@ -235,7 +241,7 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 			req.URL, response.StatusCode, time.Now().UTC().Sub(start))
 	}
 	defer response.Body.Close()
-	defer ctx.metrics.httpResponseTime.Update(int64(time.Now().Sub(start).Nanoseconds()))
+	defer ctx.metrics.httpResponseTime.Update(time.Now().Sub(start).Nanoseconds())
 	defer ctx.metrics.IncHttpReturnCode(rcr.Code)
 
 	if err != nil {
@@ -289,6 +295,10 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 
 	start := time.Now()
 
+	ctx.metrics.wsConnectionCounter.Inc(1)
+	ctx.metrics.wsConnectionOpen.Inc(1)
+	defer ctx.metrics.wsConnectionOpen.Dec(1)
+
 	outReq := f.copyRequest(req)
 	host := outReq.URL.Host
 
@@ -322,7 +332,7 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 	// it is now caller's responsibility to Close the underlying connection
 	defer underlyingConn.Close()
 	defer targetConn.Close()
-	defer ctx.metrics.wsSessionTime.Update(int64(time.Now().Sub(start).Nanoseconds()))
+	defer ctx.metrics.wsSessionTime.Update(time.Now().Sub(start).Nanoseconds())
 
 	// write the modified incoming request to the dialed connection
 	if err = outReq.Write(targetConn); err != nil {
@@ -333,17 +343,17 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 	errc := make(chan error, 2)
 	replicate := func(dst io.Writer, src io.Reader, copied metrics.Counter) {
 		buffer := ctx.bufferPool.Get().([]byte)
-		var (
-			err error
-			n   int64
-		)
-		for err == nil {
+		defer ctx.bufferPool.Put(buffer)
+
+		for {
 			lr := &io.LimitedReader{R: src, N: 4096}
-			n, err = io.CopyBuffer(dst, lr, buffer)
+			n, err := io.CopyBuffer(dst, lr, buffer)
 			copied.Inc(n)
+			if err != nil || n == 0 {
+				errc <- err
+				return
+			}
 		}
-		ctx.bufferPool.Put(buffer)
-		errc <- err
 	}
 	go replicate(targetConn, underlyingConn, ctx.metrics.wsRead)
 	go replicate(underlyingConn, targetConn, ctx.metrics.wsWritten)
