@@ -125,7 +125,7 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		// Preserve trailing slash
 		l := len(req.URL.Path)
-		if l > 1 && req.URL.Path[l-1] == '/' {
+		if l > 0 && req.URL.Path[l-1] == '/' {
 			cleanPath += "/"
 		}
 
