@@ -87,6 +87,7 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	// make shallow copy of request before chaning anything to avoid side effects
 	newReq := *req
+
 	stuck := false
 	if r.ss != nil {
 		cookieSrv, present, err := r.ss.GetBackend(&newReq, r.Servers())
@@ -136,6 +137,12 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 
 	r.next.ServeHTTP(w, &newReq)
+
+	if b := req.Context().Value("upstream-ctx"); b != nil {
+		if sc, ok := b.(UpstreamContext); ok {
+			sc.SetServer(srv.url.String())
+		}
+	}
 }
 
 func (r *RoundRobin) NextServer() (*server, error) {
