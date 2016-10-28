@@ -39,12 +39,12 @@ func NewMetricsContext(registry tsdmetrics.TaggedRegistry, tags tsdmetrics.Tags)
 }
 
 func (ctx *metricsContext) httpInit() {
+	ctx.initMutex.Lock()
+	defer ctx.initMutex.Unlock()
+
 	if ctx.httpStarted {
 		return
 	}
-
-	ctx.initMutex.Lock()
-	defer ctx.initMutex.Unlock()
 
 	ctx.httpStarted = true
 
@@ -90,12 +90,12 @@ func (ctx *metricsContext) httpInit() {
 }
 
 func (ctx *metricsContext) wsInit() {
+	ctx.initMutex.Lock()
+	defer ctx.initMutex.Unlock()
+
 	if ctx.wsStarted {
 		return
 	}
-
-	ctx.initMutex.Lock()
-	defer ctx.initMutex.Unlock()
 
 	ctx.wsStarted = true
 
