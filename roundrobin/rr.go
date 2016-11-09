@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strings"
 	"sync"
 
 	"github.com/vulcand/oxy/utils"
@@ -122,11 +123,16 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	newReq.URL.Fragment = req.URL.Fragment
 
 	if srv.pathRewrite {
-		cleanPath := path.Join(srv.url.Path, req.URL.Path)
+		// Add trailing slash on srv url
+		srvPath := srv.url.Path
+		if strings.HasSuffix(srvPath, "/") {
+			srvPath += "/"
+		}
+
+		cleanPath := path.Join(srvPath, req.URL.Path)
 
 		// Preserve trailing slash
-		l := len(req.URL.Path)
-		if l > 0 && req.URL.Path[l-1] == '/' {
+		if strings.HasSuffix(req.URL.Path, "/") && !strings.HasSuffix(cleanPath, "/") {
 			cleanPath += "/"
 		}
 
