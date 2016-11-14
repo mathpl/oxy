@@ -1,7 +1,6 @@
 package forward
 
 import (
-	"fmt"
 	"log"
 	"sync"
 
@@ -22,7 +21,11 @@ type metricsContext struct {
 	httpConnectionOpen metrics.Counter
 
 	httpResponseTime tsdmetrics.IntegerHistogram
-	httpReturnCode   map[uint8]metrics.Counter
+	httpReturnCode100,
+	httpReturnCode200,
+	httpReturnCode300,
+	httpReturnCode400,
+	httpReturnCode500 metrics.Counter
 
 	wsRead,
 	wsWritten,
@@ -84,9 +87,42 @@ func (ctx *metricsContext) httpInit() {
 	}
 	ctx.httpConnectionOpen = open
 
-	if ctx.httpReturnCode == nil {
-		ctx.httpReturnCode = make(map[uint8]metrics.Counter, 5)
+	// Each http codes
+	newHttpReturnCode100 := metrics.NewCounter()
+	c, ok := ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "1xx"}, newHttpReturnCode100).(metrics.Counter)
+	if !ok {
+		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
 	}
+	ctx.httpReturnCode100 = c
+
+	newHttpReturnCode200 := metrics.NewCounter()
+	c, ok = ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "2xx"}, newHttpReturnCode200).(metrics.Counter)
+	if !ok {
+		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
+	}
+	ctx.httpReturnCode200 = c
+
+	newHttpReturnCode300 := metrics.NewCounter()
+	c, ok = ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "3xx"}, newHttpReturnCode300).(metrics.Counter)
+	if !ok {
+		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
+	}
+	ctx.httpReturnCode300 = c
+
+	newHttpReturnCode400 := metrics.NewCounter()
+	c, ok = ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "4xx"}, newHttpReturnCode400).(metrics.Counter)
+	if !ok {
+		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
+	}
+	ctx.httpReturnCode400 = c
+
+	newHttpReturnCode500 := metrics.NewCounter()
+	c, ok = ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "5xx"}, newHttpReturnCode500).(metrics.Counter)
+	if !ok {
+		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
+	}
+	ctx.httpReturnCode500 = c
+
 }
 
 func (ctx *metricsContext) wsInit() {
@@ -139,23 +175,22 @@ func (ctx *metricsContext) wsInit() {
 func (ctx *metricsContext) IncHttpReturnCode(code int) {
 	highCode := uint8(code / 100)
 
-	ctx.initMutex.Lock()
-	defer ctx.initMutex.Unlock()
-
-	c, found := ctx.httpReturnCode[highCode]
-
-	if !found {
-		newC := metrics.NewCounter()
-		ctx.httpReturnCode[highCode] = newC
-
-		tags := ctx.tags.AddTags(tsdmetrics.Tags{"conn_type": "http", "httpcode": fmt.Sprintf("%dxx", highCode)})
-
-		var ok bool
-		c, ok = ctx.registry.GetOrRegister("response.count", tags, newC).(metrics.Counter)
-
-		if !ok {
-			log.Fatalf("Invalid type registered for: response.count %s", tags)
-		}
+	var c metrics.Counter
+	switch highCode {
+	case 1:
+		c = ctx.httpReturnCode100
+	case 2:
+		c = ctx.httpReturnCode200
+	case 3:
+		c = ctx.httpReturnCode300
+	case 4:
+		c = ctx.httpReturnCode400
+	case 5:
+		c = ctx.httpReturnCode500
+	default:
+		// Unexpected http return code, ignore
+		return
 	}
+
 	c.Inc(1)
 }
