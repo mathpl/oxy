@@ -89,40 +89,39 @@ func (ctx *metricsContext) httpInit() {
 
 	// Each http codes
 	newHttpReturnCode100 := metrics.NewCounter()
-	c, ok := ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "1xx"}, newHttpReturnCode100).(metrics.Counter)
+	c, ok := ctx.registry.GetOrRegister("response.count", httpTags.AddTags(tsdmetrics.Tags{"httpcode": "1xx"}), newHttpReturnCode100).(metrics.Counter)
 	if !ok {
 		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
 	}
 	ctx.httpReturnCode100 = c
 
 	newHttpReturnCode200 := metrics.NewCounter()
-	c, ok = ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "2xx"}, newHttpReturnCode200).(metrics.Counter)
+	c, ok = ctx.registry.GetOrRegister("response.count", httpTags.AddTags(tsdmetrics.Tags{"httpcode": "2xx"}), newHttpReturnCode200).(metrics.Counter)
 	if !ok {
 		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
 	}
 	ctx.httpReturnCode200 = c
 
 	newHttpReturnCode300 := metrics.NewCounter()
-	c, ok = ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "3xx"}, newHttpReturnCode300).(metrics.Counter)
+	c, ok = ctx.registry.GetOrRegister("response.count", httpTags.AddTags(tsdmetrics.Tags{"httpcode": "3xx"}), newHttpReturnCode300).(metrics.Counter)
 	if !ok {
 		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
 	}
 	ctx.httpReturnCode300 = c
 
 	newHttpReturnCode400 := metrics.NewCounter()
-	c, ok = ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "4xx"}, newHttpReturnCode400).(metrics.Counter)
+	c, ok = ctx.registry.GetOrRegister("response.count", httpTags.AddTags(tsdmetrics.Tags{"httpcode": "4xx"}), newHttpReturnCode400).(metrics.Counter)
 	if !ok {
 		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
 	}
 	ctx.httpReturnCode400 = c
 
 	newHttpReturnCode500 := metrics.NewCounter()
-	c, ok = ctx.registry.GetOrRegister("response.count", tsdmetrics.Tags{"httpcode": "5xx"}, newHttpReturnCode500).(metrics.Counter)
+	c, ok = ctx.registry.GetOrRegister("response.count", httpTags.AddTags(tsdmetrics.Tags{"httpcode": "5xx"}), newHttpReturnCode500).(metrics.Counter)
 	if !ok {
 		log.Fatalf("Invalid type registered for: response.count %s", ctx.tags)
 	}
 	ctx.httpReturnCode500 = c
-
 }
 
 func (ctx *metricsContext) wsInit() {
