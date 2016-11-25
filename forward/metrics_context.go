@@ -31,7 +31,6 @@ type metricsContext struct {
 	wsWritten,
 	wsConnectionCounter,
 	wsConnectionOpen metrics.Counter
-	wsSessionTime tsdmetrics.IntegerHistogram
 }
 
 func NewMetricsContext(registry tsdmetrics.TaggedRegistry, tags tsdmetrics.Tags) *metricsContext {
@@ -148,13 +147,6 @@ func (ctx *metricsContext) wsInit() {
 		log.Fatalf("Invalid type registered for: bytes %s", ctx.tags)
 	}
 	ctx.wsWritten = written
-
-	newHisto := tsdmetrics.NewIntegerHistogram(metrics.NewExpDecaySample(512, 0.15))
-	histo, ok := ctx.registry.GetOrRegister("session.time.ns", wsTags, newHisto).(tsdmetrics.IntegerHistogram)
-	if !ok {
-		log.Fatalf("Invalid type registered for: response.time.ns %s", wsTags)
-	}
-	ctx.wsSessionTime = histo
 
 	newConnectionCounter := metrics.NewCounter()
 	count, ok := ctx.registry.GetOrRegister("connection.count", wsTags, newConnectionCounter).(metrics.Counter)

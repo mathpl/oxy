@@ -5,6 +5,7 @@ package forward
 
 import (
 	"crypto/tls"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/labstack/gommon/log"
 	"github.com/mathpl/go-tsdmetrics"
 	"github.com/rcrowley/go-metrics"
 	"github.com/vulcand/oxy/utils"
@@ -293,11 +295,7 @@ func (f *httpForwarder) copyRequest(req *http.Request, u *url.URL) *http.Request
 func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx *handlerContext) {
 	ctx.metrics.wsInit()
 
-	start := time.Now()
-
 	ctx.metrics.wsConnectionCounter.Inc(1)
-	ctx.metrics.wsConnectionOpen.Inc(1)
-	defer ctx.metrics.wsConnectionOpen.Dec(1)
 
 	outReq := f.copyRequest(req)
 	host := outReq.URL.Host
@@ -330,18 +328,18 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 		return
 	}
 	// it is now caller's responsibility to Close the underlying connection
-	defer underlyingConn.Close()
-	defer targetConn.Close()
-	defer ctx.metrics.wsSessionTime.Update(time.Now().Sub(start).Nanoseconds())
 
 	// write the modified incoming request to the dialed connection
 	if err = outReq.Write(targetConn); err != nil {
 		ctx.log.Errorf("Unable to copy request to target: %v", err)
 		ctx.errHandler.ServeHTTP(w, req, err)
+		underlyingConn.Close()
 		return
 	}
-	errc := make(chan error, 2)
-	replicate := func(dst io.Writer, src io.Reader, copied metrics.Counter) {
+
+	replicate := func(wg sync.WaitGroup, id string, dst io.Writer, src io.Reader, copied metrics.Counter) {
+		defer wg.Done()
+
 		buffer := ctx.bufferPool.Get().([]byte)
 		defer ctx.bufferPool.Put(buffer)
 
@@ -350,14 +348,25 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 			n, err := io.CopyBuffer(dst, lr, buffer)
 			copied.Inc(n)
 			if err != nil || n == 0 {
-				errc <- err
+				log.Errorf("Closing websocket %s on error: %s", id, err)
 				return
 			}
 		}
 	}
-	go replicate(targetConn, underlyingConn, ctx.metrics.wsRead)
-	go replicate(underlyingConn, targetConn, ctx.metrics.wsWritten)
-	<-errc
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	go replicate(wg, fmt.Sprintf("reader from %s", host), targetConn, underlyingConn, ctx.metrics.wsRead)
+	go replicate(wg, fmt.Sprintf("writer to %s", host), underlyingConn, targetConn, ctx.metrics.wsWritten)
+
+	ctx.metrics.wsConnectionOpen.Inc(1)
+	go func(wg sync.WaitGroup) {
+		wg.Wait()
+		ctx.metrics.wsConnectionOpen.Dec(1)
+		underlyingConn.Close()
+		targetConn.Close()
+	}(wg)
 }
 
 // copyRequest makes a copy of the specified request.
