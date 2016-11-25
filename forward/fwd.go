@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/labstack/gommon/log"
@@ -337,8 +338,11 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 		return
 	}
 
-	replicate := func(wg sync.WaitGroup, id string, dst io.Writer, src io.Reader, copied metrics.Counter) {
+	var closing int32
+
+	replicate := func(wg *sync.WaitGroup, id string, dst io.Writer, src io.Reader, copied metrics.Counter) {
 		defer wg.Done()
+		defer atomic.StoreInt32(&closing, 1)
 
 		buffer := ctx.bufferPool.Get().([]byte)
 		defer ctx.bufferPool.Put(buffer)
@@ -347,21 +351,30 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 			lr := &io.LimitedReader{R: src, N: 4096}
 			n, err := io.CopyBuffer(dst, lr, buffer)
 			copied.Inc(n)
-			if err != nil || n == 0 {
-				log.Errorf("Closing websocket %s on error: %s", id, err)
+			if err != nil {
+				if atomic.LoadInt32(&closing) == 0 {
+					log.Errorf("Closing websocket %s on error: %s", id, err)
+				} else {
+					log.Infof("Closing websocket %s: %s", id, err)
+				}
+				return
+			}
+			if n == 0 {
+				// EOF, closing conn
+				log.Infof("Closing websocket %s: clean close.", id)
 				return
 			}
 		}
 	}
 
-	wg := sync.WaitGroup{}
+	wg := &sync.WaitGroup{}
 	wg.Add(2)
 
 	go replicate(wg, fmt.Sprintf("reader from %s", host), targetConn, underlyingConn, ctx.metrics.wsRead)
 	go replicate(wg, fmt.Sprintf("writer to %s", host), underlyingConn, targetConn, ctx.metrics.wsWritten)
 
 	ctx.metrics.wsConnectionOpen.Inc(1)
-	go func(wg sync.WaitGroup) {
+	go func(wg *sync.WaitGroup) {
 		wg.Wait()
 		ctx.metrics.wsConnectionOpen.Dec(1)
 		underlyingConn.Close()
