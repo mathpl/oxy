@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/jive/gumpy/pkg/jsid"
 	"github.com/vulcand/oxy/utils"
 )
 
@@ -27,6 +28,16 @@ func Weight(w int) ServerOption {
 func PathRewrite(r bool) ServerOption {
 	return func(s *server) error {
 		s.pathRewrite = r
+		return nil
+	}
+}
+
+// PathRewrite is an optional functional argument that enable server-side url rewrite on request
+func EnableJSID(status string, groupID uint32, hmacKeys [][]byte) ServerOption {
+	return func(s *server) error {
+		s.status = status
+		s.groupID = groupID
+		s.hmacKeys = hmacKeys
 		return nil
 	}
 }
@@ -55,6 +66,8 @@ type RoundRobin struct {
 	servers       []*server
 	currentWeight int
 	ss            *StickySession
+
+	stickyServers map[uint32]*server
 }
 
 func New(next http.Handler, opts ...LBOption) (*RoundRobin, error) {
@@ -73,6 +86,7 @@ func New(next http.Handler, opts ...LBOption) (*RoundRobin, error) {
 	if rr.errHandler == nil {
 		rr.errHandler = utils.DefaultHandler
 	}
+	rr.stickyServers = make(map[uint32]*server, 0)
 	return rr, nil
 }
 
@@ -100,6 +114,19 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		if present {
 			srv = cookieSrv
+			stuck = true
+		}
+	}
+
+	sj, err := jsid.SignedJSIDFromHeader(newReq.Header)
+	if err != nil {
+		fmt.Println(err)
+	}
+	if sj != nil {
+		jsid := sj.Retrieve()
+		gid := jsid.GetGroupID()
+
+		if srv = r.stickyServers[gid]; srv != nil {
 			stuck = true
 		}
 	}
@@ -197,6 +224,7 @@ func (r *RoundRobin) RemoveServer(u *url.URL) error {
 		return fmt.Errorf("server not found")
 	}
 	r.servers = append(r.servers[:index], r.servers[index+1:]...)
+	delete(r.stickyServers, e.groupID)
 	r.resetState()
 	return nil
 }
@@ -252,8 +280,15 @@ func (rr *RoundRobin) UpsertServer(u *url.URL, options ...ServerOption) error {
 		srv.weight = defaultWeight
 	}
 
-	rr.servers = append(rr.servers, srv)
-	rr.resetState()
+	if srv.groupID != 0 {
+		rr.stickyServers[srv.groupID] = srv
+	}
+
+	if srv.groupID == 0 || srv.status == "FULL" {
+		rr.servers = append(rr.servers, srv)
+		rr.resetState()
+	}
+
 	return nil
 }
 
@@ -320,6 +355,10 @@ type server struct {
 	weight int
 
 	pathRewrite bool
+
+	status   string
+	groupID  uint32
+	hmacKeys [][]byte
 }
 
 const defaultWeight = 1
