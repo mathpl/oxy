@@ -33,11 +33,12 @@ func PathRewrite(r bool) ServerOption {
 }
 
 // PathRewrite is an optional functional argument that enable server-side url rewrite on request
-func EnableJSID(status string, groupID uint32, hmacKeys [][]byte) ServerOption {
+func EnableJSID(status string, groupID uint32, hmacKeys [][]byte, stickyRoutingOnly bool) ServerOption {
 	return func(s *server) error {
-		s.status = status
-		s.groupID = groupID
-		s.hmacKeys = hmacKeys
+		s.routing = &routing{status: status,
+			groupID:           groupID,
+			hmacKeys:          hmacKeys,
+			stickyRoutingOnly: stickyRoutingOnly}
 		return nil
 	}
 }
@@ -122,12 +123,19 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		fmt.Println(err)
 	}
+
 	if sj != nil {
 		jsid := sj.Retrieve()
-		gid := jsid.GetGroupID()
+		if !jsid.IsExpired() {
+			gid := jsid.GetGroupID()
 
-		if srv = r.stickyServers[gid]; srv != nil {
-			stuck = true
+			if srv = r.stickyServers[gid]; srv != nil {
+				for _, k := range srv.routing.hmacKeys {
+					if sj.Verify(k) {
+						stuck = true
+					}
+				}
+			}
 		}
 	}
 
@@ -224,7 +232,9 @@ func (r *RoundRobin) RemoveServer(u *url.URL) error {
 		return fmt.Errorf("server not found")
 	}
 	r.servers = append(r.servers[:index], r.servers[index+1:]...)
-	delete(r.stickyServers, e.groupID)
+	if e.routing != nil {
+		delete(r.stickyServers, e.routing.groupID)
+	}
 	r.resetState()
 	return nil
 }
@@ -280,11 +290,14 @@ func (rr *RoundRobin) UpsertServer(u *url.URL, options ...ServerOption) error {
 		srv.weight = defaultWeight
 	}
 
-	if srv.groupID != 0 {
-		rr.stickyServers[srv.groupID] = srv
-	}
+	if srv.routing != nil {
+		rr.stickyServers[srv.routing.groupID] = srv
 
-	if srv.groupID == 0 || srv.status == "FULL" {
+		if srv.routing.status == "FULL" || !srv.routing.stickyRoutingOnly {
+			rr.servers = append(rr.servers, srv)
+			rr.resetState()
+		}
+	} else {
 		rr.servers = append(rr.servers, srv)
 		rr.resetState()
 	}
@@ -356,9 +369,14 @@ type server struct {
 
 	pathRewrite bool
 
-	status   string
-	groupID  uint32
-	hmacKeys [][]byte
+	routing *routing
+}
+
+type routing struct {
+	stickyRoutingOnly bool
+	status            string
+	groupID           uint32
+	hmacKeys          [][]byte
 }
 
 const defaultWeight = 1
