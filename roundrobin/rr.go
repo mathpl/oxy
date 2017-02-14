@@ -126,14 +126,12 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	if sj != nil {
 		jsid := sj.Retrieve()
-		if !jsid.IsExpired() {
-			gid := jsid.GetGroupID()
+		gid := jsid.GetGroupID()
 
-			if srv = r.stickyServers[gid]; srv != nil {
-				for _, k := range srv.routing.hmacKeys {
-					if sj.Verify(k) {
-						stuck = true
-					}
+		if srv = r.stickyServers[gid]; srv != nil {
+			for _, k := range srv.routing.hmacKeys {
+				if sj.Verify(k) {
+					stuck = true
 				}
 			}
 		}
