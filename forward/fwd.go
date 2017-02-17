@@ -326,6 +326,7 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 	if err != nil {
 		ctx.log.Errorf("Unable to hijack the connection: %v %v", reflect.TypeOf(w), err)
 		ctx.errHandler.ServeHTTP(w, req, err)
+		targetConn.Close()
 		return
 	}
 	// it is now caller's responsibility to Close the underlying connection
@@ -335,22 +336,33 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 		ctx.log.Errorf("Unable to copy request to target: %v", err)
 		ctx.errHandler.ServeHTTP(w, req, err)
 		underlyingConn.Close()
+		targetConn.Close()
 		return
 	}
 
 	var closing int32
 
-	replicate := func(wg *sync.WaitGroup, id string, dst io.Writer, src io.Reader, copied metrics.Counter) {
+	replicate := func(wg *sync.WaitGroup, id string, dst net.Conn, src net.Conn, copied metrics.Counter) {
 		defer wg.Done()
+		defer dst.Close()
 		defer atomic.StoreInt32(&closing, 1)
 
-		buffer := ctx.bufferPool.Get().([]byte)
-		defer ctx.bufferPool.Put(buffer)
-
 		for {
-			lr := &io.LimitedReader{R: src, N: 4096}
-			n, err := io.CopyBuffer(dst, lr, buffer)
+			fastFail := time.Now().Add(1 * time.Second)
+			src.SetReadDeadline(time.Now().Add(15 * time.Second))
+
+			n, err := io.Copy(dst, src)
 			copied.Inc(n)
+
+			if err == io.EOF {
+				log.Infof("Closing websocket %s: %s.", id, err)
+				return
+			}
+
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+
 			if err != nil {
 				if atomic.LoadInt32(&closing) == 0 {
 					log.Errorf("Closing websocket %s on error: %s", id, err)
@@ -359,8 +371,8 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 				}
 				return
 			}
-			if n == 0 {
-				// EOF, closing conn
+
+			if n == 0 && time.Now().Before(fastFail) {
 				log.Infof("Closing websocket %s: clean close.", id)
 				return
 			}
@@ -370,15 +382,14 @@ func (f *websocketForwarder) serveHTTP(w http.ResponseWriter, req *http.Request,
 	wg := &sync.WaitGroup{}
 	wg.Add(2)
 
-	go replicate(wg, fmt.Sprintf("reader from %s", host), targetConn, underlyingConn, ctx.metrics.wsRead)
-	go replicate(wg, fmt.Sprintf("writer to %s", host), underlyingConn, targetConn, ctx.metrics.wsWritten)
+	go replicate(wg, fmt.Sprintf("reader from %s", targetConn.RemoteAddr()), targetConn, underlyingConn, ctx.metrics.wsRead)
+	go replicate(wg, fmt.Sprintf("writer to %s", underlyingConn.RemoteAddr()), underlyingConn, targetConn, ctx.metrics.wsWritten)
 
 	ctx.metrics.wsConnectionOpen.Inc(1)
 	go func(wg *sync.WaitGroup) {
 		wg.Wait()
 		ctx.metrics.wsConnectionOpen.Dec(1)
-		underlyingConn.Close()
-		targetConn.Close()
+		log.Infof("Closed both side of websocket between %s <-> %s", targetConn.RemoteAddr(), underlyingConn.RemoteAddr())
 	}(wg)
 }
 
