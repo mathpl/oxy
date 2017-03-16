@@ -27,6 +27,8 @@ type metricsContext struct {
 	httpReturnCode400,
 	httpReturnCode500 metrics.Counter
 
+	timeWindowedHttpResponseTime tsdmetrics.IntegerHistogram
+
 	wsRead,
 	wsWritten,
 	wsConnectionCounter,
@@ -71,6 +73,13 @@ func (ctx *metricsContext) httpInit() {
 		log.Fatalf("Invalid type registered for: response.time.ns %s", httpTags)
 	}
 	ctx.httpResponseTime = histo
+
+	newTimeWindowedHisto := tsdmetrics.NewIntegerHistogram(metrics.NewUniformSample(128))
+	timeWindowedHisto, ok := ctx.registry.GetOrRegister("timewindowed.response.time.ns", httpTags, newTimeWindowedHisto).(tsdmetrics.IntegerHistogram)
+	if !ok {
+		log.Fatalf("Invalid type registered for: timewindowed.response.time.ns %s", httpTags)
+	}
+	ctx.timeWindowedHttpResponseTime = timeWindowedHisto
 
 	newConnectionCounter := metrics.NewCounter()
 	count, ok := ctx.registry.GetOrRegister("connection.count", httpTags, newConnectionCounter).(metrics.Counter)

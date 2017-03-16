@@ -99,7 +99,14 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	var (
 		srv *server
 		err error
+		uc  UpstreamContext
 	)
+
+	if b := req.Context().Value("upstream-ctx"); b != nil {
+		if uCtx, ok := b.(UpstreamContext); ok {
+			uc = uCtx
+		}
+	}
 
 	// make shallow copy of request before chaning anything to avoid side effects
 	newReq := *req
@@ -110,6 +117,7 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 		if err != nil {
 			r.errHandler.ServeHTTP(w, req, err)
+			uc.Set("error", err.Error())
 			return
 		}
 
@@ -121,7 +129,7 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	sj, err := jsid.SignedJSIDFromHeader(newReq.Header)
 	if err != nil {
-		fmt.Println(err)
+		uc.Set("jsid-error", err.Error())
 	}
 
 	if sj != nil {
@@ -135,12 +143,17 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 				}
 			}
 		}
+
+		if !stuck {
+			uc.Set("jsid-error", "No corresponding jumpy announce")
+		}
 	}
 
 	if !stuck {
 		srv, err = r.NextServer()
 		if err != nil {
 			r.errHandler.ServeHTTP(w, req, err)
+			uc.Set("error", err.Error())
 			return
 		}
 
@@ -177,11 +190,7 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	r.next.ServeHTTP(w, &newReq)
 
-	if b := req.Context().Value("upstream-ctx"); b != nil {
-		if sc, ok := b.(UpstreamContext); ok {
-			sc.SetServer(srv.url.String())
-		}
-	}
+	uc.Set("upstream", srv.url.String())
 }
 
 func (r *RoundRobin) NextServer() (*server, error) {

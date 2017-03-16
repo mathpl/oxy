@@ -244,7 +244,9 @@ func (f *httpForwarder) serveHTTP(w http.ResponseWriter, req *http.Request, ctx 
 			req.URL, response.StatusCode, time.Now().UTC().Sub(start))
 	}
 	defer response.Body.Close()
+
 	defer ctx.metrics.httpResponseTime.Update(time.Now().Sub(start).Nanoseconds())
+	defer ctx.metrics.timeWindowedHttpResponseTime.Update(time.Now().Sub(start).Nanoseconds())
 	defer ctx.metrics.IncHttpReturnCode(rcr.Code)
 
 	if err != nil {
