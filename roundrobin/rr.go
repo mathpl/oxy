@@ -152,8 +152,7 @@ func (r *RoundRobin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if !stuck {
 		srv, err = r.NextServer()
 		if err != nil {
-			r.errHandler.ServeHTTP(w, req, err)
-			uc.Set("error", err.Error())
+			http.Error(w, "503 Service Unavailable.", http.StatusServiceUnavailable)
 			return
 		}
 
