@@ -292,10 +292,6 @@ func (rr *RoundRobin) UpsertServer(u *url.URL, options ...ServerOption) error {
 		}
 	}
 
-	if srv.weight == 0 {
-		srv.weight = defaultWeight
-	}
-
 	if srv.routing != nil {
 		rr.stickyServers[srv.routing.groupID] = srv
 
@@ -384,8 +380,6 @@ type routing struct {
 	groupID           uint32
 	hmacKeys          [][]byte
 }
-
-const defaultWeight = 1
 
 func sameURL(a, b *url.URL) bool {
 	return a.Path == b.Path && a.Host == b.Host && a.Scheme == b.Scheme
